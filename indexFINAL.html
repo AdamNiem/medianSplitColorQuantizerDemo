@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <style>
+            canvas{
+                border: 1px solid black;
+            }
+        </style>
+
+    </head>
+    <body>
+        <canvas id="myCanvas"></canvas>
+        <input type="file" id="imageUploadInput" accept="image/*">
+        <canvas id="hexCanvas"></canvas>
+        <canvas id="rgbOutputCanvas"></canvas>
+        <div>
+            <p>model to use:</p>
+            <select name="models" id="modelDropdown">
+                <option value="medianSplit" selected>medianSplit</option>
+                <option value="rgbColorDifference">rgbColorDifference</option>
+                <option value="xyzColorDifference">xyzColorDifference</option>
+              </select>
+        </div>
+        <script>
+            function medianCutQuantization(imageData, colorCount = 16) {
+                //throw error if color count is not even as median cut will not provide correct results if color count is not even
+                if(colorCount % 2 !== 0){
+                    throw console.error(`Color count must be an even number. Currently the color count is ${colorCount}`);
+                    return;
+                }
+
+                // Extract RGB values from image data
+                const pixels = [];
+                let r, g, b;
+                let h, s, l;
+                for (let i = 0; i < imageData.data.length; i += 4) {
+                    // Skip fully transparent pixels
+                    if (imageData.data[i + 3] > 0) {
+                        r = imageData.data[i]; // R
+                        g = imageData.data[i + 1]; // G
+                        b = imageData.data[i + 2];  // B
+
+                        pixels.push([
+                        r,     // R
+                        g,     // G
+                        b      // B
+                        ]);
+                    }
+                }
+
+                // Recursive median cut function
+                //depth and pixelSubset must both be passed as arguments
+                function medianCut(pixelSubset, depth = 0) {
+
+                    if (pixelSubset.length <= colorCount || depth >= 8) {
+                        // Compute average color when subset is small enough
+                        const avgColor = pixelSubset.reduce((acc, pixel) => [
+                            acc[0] + pixel[0],
+                            acc[1] + pixel[1],
+                            acc[2] + pixel[2]
+                        ], [0, 0, 0]).map(val => Math.round(val / pixelSubset.length));
+                        
+                        return [avgColor];
+                    }
+
+                    // Find the color channel with the most variance
+                    const channelVariance = [0, 1, 2].map(channel => {
+                        const values = pixelSubset.map(pixel => pixel[channel]);
+                        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+                        const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / values.length;
+                        return variance;
+                    });
+
+                    // Find the channel with maximum variance
+                    const maxVarianceChannel = channelVariance.indexOf(Math.max(...channelVariance));
+
+                    // Sort pixels by the channel with max variance
+                    const sortedPixels = pixelSubset.sort((a, b) => a[maxVarianceChannel] - b[maxVarianceChannel]);
+
+                    // Split into two subsets
+                    const midIndex = Math.floor(sortedPixels.length / 2);
+                    const leftSubset = sortedPixels.slice(0, midIndex);
+                    const rightSubset = sortedPixels.slice(midIndex);
+
+                    // Recursively process subsets
+                    return [
+                    ...medianCut(leftSubset, depth + 1),
+                    ...medianCut(rightSubset, depth + 1)
+                    ]
+                }
+
+                // Perform median cut quantization
+                let paletteColors = medianCut(pixels);
+                console.log(`palette color length yeet1 is ${paletteColors.length}`);
+                paletteColors = Array.from(new Set(paletteColors.map(JSON.stringify))).map(JSON.parse); //remove duplicate colors in paletteColors
+                console.log(`palette color set length yeet1 is ${paletteColors.length}`);
+
+                // Create quantized image data
+                const quantizedData = new Uint8ClampedArray(imageData.data.length);
+
+                for (let i = 0; i < imageData.data.length; i += 4) {
+                    // Skip fully transparent pixels
+                    if (imageData.data[i + 3] === 0) {
+                        quantizedData[i] = 0;
+                        quantizedData[i + 1] = 0;
+                        quantizedData[i + 2] = 0;
+                        quantizedData[i + 3] = 0;
+                        continue;
+                    }
+
+                    // Find closest color in palette
+                    const pixel = [
+                        imageData.data[i],
+                        imageData.data[i + 1],
+                        imageData.data[i + 2]
+                    ];
+
+                    const closestColor = paletteColors.reduce((closest, paletteColor) => {
+                        const dist = Math.sqrt(
+                            Math.pow(pixel[0] - paletteColor[0], 2) +
+                            Math.pow(pixel[1] - paletteColor[1], 2) +
+                            Math.pow(pixel[2] - paletteColor[2], 2)
+                        );
+                        return dist < closest.dist ? { color: paletteColor, dist } : closest;
+                    }, { color: paletteColors[0], dist: Infinity }).color;
+
+                    quantizedData[i] = closestColor[0];
+                    quantizedData[i + 1] = closestColor[1];
+                    quantizedData[i + 2] = closestColor[2];
+                    quantizedData[i + 3] = imageData.data[i + 3];
+                }
+
+                return {
+                    paletteColors,
+                    quantizedImageData: new ImageData(quantizedData, imageData.width, imageData.height)
+                };
+            }
+
+            // Usage example:
+            // const canvas = document.getElementById('myCanvas');
+            // const ctx = canvas.getContext('2d');
+            // const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            // const { paletteColors, quantizedImageData } = medianCutQuantization(imageData);
+        </script>
+
+        <script>
+            // Convert RGB to Lab color space for perceptual color difference
+            function rgbToLab(rgb) {
+            // Convert RGB to XYZ
+            let [r, g, b] = rgb.map(v => v / 255);
+            r = r > 0.04045 ? Math.pow((r + 0.055) / 1.055, 2.4) : r / 12.92;
+            g = g > 0.04045 ? Math.pow((g + 0.055) / 1.055, 2.4) : g / 12.92;
+            b = b > 0.04045 ? Math.pow((b + 0.055) / 1.055, 2.4) : b / 12.92;
+
+            const x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047;
+            const y = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 1.0;
+            const z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+
+            // Convert XYZ to Lab
+            const fx = x > 0.008856 ? Math.pow(x, 1/3) : (7.787 * x) + (16/116);
+            const fy = y > 0.008856 ? Math.pow(y, 1/3) : (7.787 * y) + (16/116);
+            const fz = z > 0.008856 ? Math.pow(z, 1/3) : (7.787 * z) + (16/116);
+
+            const L = (116 * fy) - 16;
+            const a = 500 * (fx - fy);
+            const b_val = 200 * (fy - fz);
+
+            return [L, a, b_val];
+            }
+
+            // Calculate CIE76 color difference (Delta E)
+            function colorDifference(color1, color2) {
+            const [L1, a1, b1] = rgbToLab(color1);
+            const [L2, a2, b2] = rgbToLab(color2);
+
+            return Math.sqrt(
+                Math.pow(L1 - L2, 2) + 
+                Math.pow(a1 - a2, 2) + 
+                Math.pow(b1 - b2, 2)
+            );
+            }
+
+            function rgbColorDifference(color1, color2) {
+                return Math.sqrt(
+                    Math.pow(color1[0] - color2[0], 2) +
+                    Math.pow(color1[1] - color2[1], 2) +
+                    Math.pow(color1[2] - color2[2], 2)
+                );
+            }
+
+            // Remove visually similar colors from a color palette
+            function removeSimilarColors(colorPalette, threshold) {
+            // If the palette is empty or has only one color, return as is
+            if (colorPalette.length <= 1) return colorPalette;
+
+            // Create a new array to store unique colors
+            const uniqueColors = [colorPalette[0]];
+
+            // Iterate through the remaining colors
+            for (let i = 1; i < colorPalette.length; i++) {
+                const currentColor = colorPalette[i];
+                
+                // Check if the current color is similar to any color in the unique colors array
+                const isSimilar = uniqueColors.some(
+                uniqueColor => rgbColorDifference(currentColor, uniqueColor) < threshold
+                );
+
+                // If not similar, add to unique colors
+                if (!isSimilar) {
+                uniqueColors.push(currentColor);
+                }
+            }
+
+            return uniqueColors;
+            }
+        
+            function sortByColorDifference(imageData, threshold = 10){
+                // Extract RGB values from image data
+                const pixels = [];
+                let r, g, b;
+                let h, s, l;
+                for (let i = 0; i < imageData.data.length; i += 4) {
+                // Skip fully transparent pixels
+                if (imageData.data[i + 3] > 0) {
+                    r = imageData.data[i]; // R
+                    g = imageData.data[i + 1]; // G
+                    b = imageData.data[i + 2];  // B
+
+                    pixels.push([
+                    r,     // R
+                    g,     // G
+                    b      // B
+                    ]);
+                }
+                }
+                return removeSimilarColors(pixels, threshold);
+            }
+        
+
+
+             // Remove visually similar colors from a color palette
+             function removeSimilarXYZColors(colorPalette, threshold) {
+            // If the palette is empty or has only one color, return as is
+            if (colorPalette.length <= 1) return colorPalette;
+
+            // Create a new array to store unique colors
+            const uniqueColors = [colorPalette[0]];
+
+            // Iterate through the remaining colors
+            for (let i = 1; i < colorPalette.length; i++) {
+                const currentColor = colorPalette[i];
+                
+                // Check if the current color is similar to any color in the unique colors array
+                const isSimilar = uniqueColors.some(
+                uniqueColor => colorDifference(currentColor, uniqueColor) < threshold
+                );
+
+                // If not similar, add to unique colors
+                if (!isSimilar) {
+                uniqueColors.push(currentColor);
+                }
+            }
+
+            return uniqueColors;
+            }
+        
+            function sortByXYZColorDifference(imageData, threshold = 10){
+                // Extract RGB values from image data
+                const pixels = [];
+                let r, g, b;
+                let h, s, l;
+                for (let i = 0; i < imageData.data.length; i += 4) {
+                // Skip fully transparent pixels
+                if (imageData.data[i + 3] > 0) {
+                    r = imageData.data[i]; // R
+                    g = imageData.data[i + 1]; // G
+                    b = imageData.data[i + 2];  // B
+
+                    pixels.push([
+                    r,     // R
+                    g,     // G
+                    b      // B
+                    ]);
+                }
+                }
+                return removeSimilarXYZColors(pixels, threshold);
+            }
+        
+            
+        
+        </script>
+
+        <script>
+
+            const canvas = document.getElementById('myCanvas');
+            const ctx = canvas.getContext('2d');
+
+            const rgbOutputCanvas = document.getElementById("rgbOutputCanvas");
+            const rgbOutputCtx = rgbOutputCanvas.getContext('2d');
+
+            const modelDropdown = document.getElementById("modelDropdown");
+
+            function renderRGBCanvas(rgbArray, width) {
+                const height = Math.ceil(rgbArray.length / width);
+                const pixelSize = 100; // Size of each pixel on the canvas
+
+                rgbOutputCanvas.width = width * pixelSize + (rgbArray.length * 2);
+                rgbOutputCanvas.height = height * pixelSize + (rgbArray.length * 2);
+
+                rgbArray.forEach((rgb, index) => {
+                    const [r, g, b] = rgb; // Extract RGB values
+                    const x = (index % width) * pixelSize;
+                    const y = Math.floor(index / width) * pixelSize;
+
+                    // Set the fill color using the RGB values and draw the rectangle
+                    rgbOutputCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+                    rgbOutputCtx.fillRect(x, y, pixelSize - 1, pixelSize - 1);
+                });
+            }
+            
+            // Draw your image or lines here
+            const imageUploadInput = document.getElementById("imageUploadInput");
+            imageUploadInput.addEventListener("change", (e)=>{
+                const file = e.target.files[0];
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+
+                // Prepare canvas for points marking
+                const img = new Image();
+                img.onload = () => {
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+
+                    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+                    console.log(modelDropdown.value);
+                    let paletteColors, quantizedImageData;
+                    switch(modelDropdown.value){
+                        case "medianSplit":
+                            ({ paletteColors, quantizedImageData } = medianCutQuantization(imageData));
+                            console.log(paletteColors);
+                            paletteColors = removeSimilarColors(paletteColors, 100);
+                            console.log("been de duplicated");
+                            console.log(paletteColors);
+                            ctx.putImageData(quantizedImageData, 0, 0);
+                            renderRGBCanvas(paletteColors, 10);
+
+                        break;
+                        case "rgbColorDifference":
+                            paletteColors = sortByColorDifference(imageData, 100);
+                            console.log(paletteColors);
+                            renderRGBCanvas(paletteColors, 10);
+
+                        break;
+                        case "xyzColorDifference":
+                            paletteColors = sortByXYZColorDifference(imageData, 38);
+                            console.log(paletteColors);
+                            renderRGBCanvas(paletteColors, 10);
+
+                        break;
+                    }
+
+                };
+                img.src = URL.createObjectURL(file);
+            });
+            
+            
+        </script>
+    </body>
+</html>
